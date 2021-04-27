@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -45,6 +47,60 @@ kvminit()
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  /* vmprint(kernel_pagetable); */
+}
+
+void
+kvmmap_pt(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("kvmmap_pt");
+}
+
+pagetable_t
+kvm_pagetable()
+{
+  pagetable_t pt = (pagetable_t) kalloc();
+  memset(pt, 0, PGSIZE);
+
+  // uart registers
+  kvmmap_pt(pt, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  kvmmap_pt(pt, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // PLIC
+  kvmmap_pt(pt, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  kvmmap_pt(pt, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  kvmmap_pt(pt, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  kvmmap_pt(pt, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  /* vmprint(kernel_pagetable); */
+  return pt;
+}
+
+// Free a process's page table, and free the
+// physical memory it refers to.
+void
+kvm_freepagetable(pagetable_t pagetable)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      kvm_freepagetable((pagetable_t)child);
+      pagetable[i] = 0;
+    } 
+  }
+  kfree((void*)pagetable);
+
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -132,7 +188,7 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(myproc()->kpagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -287,6 +343,47 @@ freewalk(pagetable_t pagetable)
     }
   }
   kfree((void*)pagetable);
+}
+
+void 
+pagetable_walk(pagetable_t pagetable, int level) {
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pagetable[i];
+        if (!(pte & PTE_V))
+            continue;
+        printf("..");
+        for (int x = 1; x <= level; x++) 
+            printf(" ..");
+        uint64 child = PTE2PA(pte);
+        printf("%d: pte %p", i, pte);
+        /* if ((pte & PTE_R) > 0) */
+        /*     printf("r"); */
+        /* else */
+        /*     printf("-"); */
+        /* if ((pte & PTE_W) > 1) */
+        /*     printf("w"); */
+        /* else */
+        /*     printf("-"); */
+        /* if ((pte & PTE_X) > 1) */
+        /*     printf("x"); */
+        /* else */
+        /*     printf("-"); */
+        /* if ((pte & PTE_U) > 1) */
+        /*     printf("u"); */
+        /* else */
+        /*     printf("-"); */
+        printf(" pa %p\n", child);
+        if ((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+            // has lower-level pt
+            pagetable_walk((pagetable_t)child, level+1);
+        }
+    }
+}
+
+void 
+vmprint(pagetable_t pagetable) {
+    printf("page table %p\n", pagetable);
+    pagetable_walk(pagetable, 0);
 }
 
 // Free user memory pages,
