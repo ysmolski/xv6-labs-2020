@@ -346,7 +346,7 @@ freewalk(pagetable_t pagetable)
 }
 
 void 
-pagetable_walk(pagetable_t pagetable, int level) {
+printwalk(pagetable_t pagetable, int level) {
     for (int i = 0; i < 512; i++) {
         pte_t pte = pagetable[i];
         if (!(pte & PTE_V))
@@ -375,7 +375,7 @@ pagetable_walk(pagetable_t pagetable, int level) {
         printf(" pa %p\n", child);
         if ((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
             // has lower-level pt
-            pagetable_walk((pagetable_t)child, level+1);
+            printwalk((pagetable_t)child, level+1);
         }
     }
 }
@@ -383,7 +383,7 @@ pagetable_walk(pagetable_t pagetable, int level) {
 void 
 vmprint(pagetable_t pagetable) {
     printf("page table %p\n", pagetable);
-    pagetable_walk(pagetable, 0);
+    printwalk(pagetable, 0);
 }
 
 // Free user memory pages,
@@ -476,23 +476,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -502,38 +486,29 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  return copyinstr_new(pagetable, dst, srcva, max);
+}
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+void
+copymapping(pagetable_t src, pagetable_t dst, uint64 va0, uint64 va1)
+{
+    pte_t *pte;
+    uint64 pa, va;
+    uint flags;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
+    if (va1 < va0)
+        return;
+
+    va0 = PGROUNDUP(va0);
+    /* printf("copymap %p -> %p %p ... %p\n", src, dst, va0, va1); */
+    for(va = va0; va < va1; va += PGSIZE){
+        if((pte = walk(src, va, 0)) == 0)
+            panic("copymapping: pte should exist");
+        pa = PTE2PA(*pte);
+        flags = PTE_FLAGS(*pte);
+        pte_t *pte_to;
+        if ((pte_to = walk(dst, va, 1)) == 0)
+            panic("copymapping: dst walk failed");
+        *pte_to = PA2PTE(pa) | (flags & ~PTE_U);
     }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
 }
