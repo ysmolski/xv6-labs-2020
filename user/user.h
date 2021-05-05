@@ -24,6 +24,10 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 
+typedef void (*handler)();
+int sigalarm(int ticks, handler); 
+int sigreturn(void);
+
 // ulib.c
 int stat(const char*, struct stat*);
 char* strcpy(char*, const char*);

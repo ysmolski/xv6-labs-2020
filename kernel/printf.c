@@ -121,6 +121,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -132,3 +133,26 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x) );
+  return x;
+}
+
+void
+backtrace(void) {
+    uint64 fp = r_fp();
+    uint64 top = PGROUNDUP(fp);
+    while (fp < top) {
+        /* printf("fp=%p\n", fp); */
+        uint64 *ret_addr = (void *)(fp-8);
+        printf("%p\n", *ret_addr);
+
+        uint64 *sfp = (void *)(fp-16);
+        fp = *sfp;
+    }
+}
+
