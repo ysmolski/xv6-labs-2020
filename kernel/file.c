@@ -168,6 +168,7 @@ filewrite(struct file *f, uint64 addr, int n)
 
       if(r < 0)
         break;
+      
       if(r != n1)
         panic("short filewrite");
       i += r;
