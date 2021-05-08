@@ -23,10 +23,25 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct {
+    int refs[((PHYSTOP - KERNBASE)) / PGSIZE + 1];
+    struct spinlock lock;
+} kpages;
+
+
+#define PAGENUM(p) (((p) - KERNBASE) / PGSIZE)
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&kpages.lock, "kpages");
+
+  acquire(&kpages.lock);
+  for (uint i=0; i < NELEM(kpages.refs); i++)
+      kpages.refs[i]=-100; // means uninitialized page
+  release(&kpages.lock);
+
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -51,6 +66,20 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  int refs = kdecref((uint64)pa);
+  /* if (refs == 0) */
+  /*     printf("kfree %p pn %d %d\n", (uint64)pa, PAGENUM((uint64)pa), refs); */ 
+  if (refs == -101){
+      // call from init
+      acquire(&kpages.lock);
+      kpages.refs[PAGENUM((uint64)pa)] = 0;
+      release(&kpages.lock);
+  } else if (refs < 0) {
+      panic("attempt to free already unreferenced page");
+  } else if (refs > 0) {
+      return;
+  }
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -62,6 +91,27 @@ kfree(void *pa)
   release(&kmem.lock);
 }
 
+int
+kincref(uint64 pa){
+    int refs;
+    acquire(&kpages.lock);
+    kpages.refs[PAGENUM(pa)]++;
+    refs = kpages.refs[PAGENUM(pa)];
+    release(&kpages.lock);
+    return refs;
+}
+
+int
+kdecref(uint64 pa){
+    int refs;
+    acquire(&kpages.lock);
+    kpages.refs[PAGENUM(pa)]--;
+    refs = kpages.refs[PAGENUM(pa)];
+    release(&kpages.lock);
+    return refs;
+}
+
+
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
@@ -72,11 +122,19 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+  }
   release(&kmem.lock);
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+  if(r) {
+      int refs = kincref((uint64)r);
+      /* printf("kalloc %p pn %d %d\n", (uint64)r, PAGENUM((uint64)r), refs); */ 
+      if (refs>1) {
+          /* printf("refs %d\n", refs); */
+          panic("kalloc: page has too many refs");
+      }
+      memset((char*)r, 5, PGSIZE); // fill with junk
+  }
   return (void*)r;
 }
